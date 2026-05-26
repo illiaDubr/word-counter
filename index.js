@@ -2,44 +2,50 @@
 
 const { Worker } = require('worker_threads');
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const path = require('path');
 const os = require('os');
+const readline = require('readline');
 
 // ──────────────────────────────────────────────
-//  Налаштування аргументів командного рядка
+// 
 // ──────────────────────────────────────────────
 const args = process.argv.slice(2);
 
-if (args.length === 0 || args[0] === '--help') {
-  console.log(`
-Використання:
-  node index.js <файл.txt> [параметри]
-
-Параметри:
-  --top <N>          Кількість топ-слів у результаті  (за замовч.: 50)
-  --out <файл.json>  Шлях до вихідного файлу          (за замовч.: output.json)
-  --threads <N>      Кількість потоків воркерів        (за замовч.: кількість CPU)
-
-Приклади:
-  node index.js book.txt
-  node index.js book.txt --top 100 --out stats.json
-  node index.js book.txt --threads 4
-`);
-  process.exit(0);
-}
-
-const inputFile  = args[0];
-const topN       = parseInt(getArg('--top', '50'));
-const outFile    = getArg('--out', 'output.json');
-const numThreads = parseInt(getArg('--threads', String(os.cpus().length)));
 function getArg(flag, def) {
   const i = args.indexOf(flag);
   return i !== -1 && args[i + 1] ? args[i + 1] : def;
 }
 
 // ──────────────────────────────────────────────
-//  Розбиває рядки на N приблизно рівних чанків
+// 
 // ──────────────────────────────────────────────
+async function askFilename() {
+  const dir = process.cwd();
+  const txtFiles = fsSync.readdirSync(dir).filter(f => f.endsWith('.txt'));
+
+  console.log('\n╔══════════════════════════════════════╗');
+  console.log('║      Word Frequency Counter          ║');
+  console.log('╚══════════════════════════════════════╝\n');
+
+  if (txtFiles.length > 0) {
+    console.log('Знайдені .txt файли в папці:');
+    txtFiles.forEach(f => console.log(`  • ${f}`));
+    console.log('');
+  } else {
+    console.log('У поточній папці немає .txt файлів.\n');
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => {
+    rl.question('Введіть назву файлу: ', answer => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+
 function splitIntoChunks(lines, n) {
   const chunks = [];
   const size = Math.ceil(lines.length / n);
@@ -82,20 +88,46 @@ function mergeResults(results) {
 //  Головна функція
 // ──────────────────────────────────────────────
 async function main() {
-  // Читаємо файл
+  // Визначаємо файл — з аргументу або інтерактивно
+  let inputFile = args[0];
+
+  if (args[0] === '--help') {
+    console.log(`
+Використання:
+  word-counter.exe <файл.txt> [параметри]
+
+Параметри:
+  --top <N>          Кількість топ-слів у результаті  (за замовч.: 50)
+  --out <файл.json>  Шлях до вихідного файлу          (за замовч.: output.json)
+  --threads <N>      Кількість потоків воркерів        (за замовч.: кількість CPU)
+`);
+    process.exit(0);
+  }
+
+  if (!inputFile) {
+    inputFile = await askFilename();
+    if (!inputFile) {
+      console.error('Файл не вказано. Завершення.');
+      process.exit(1);
+    }
+  }
+
+  const topN       = parseInt(getArg('--top', '50'));
+  const outFile    = getArg('--out', 'output.json');
+  const numThreads = parseInt(getArg('--threads', String(os.cpus().length)));
+
+
   const absPath = path.resolve(inputFile);
   let content;
   try {
     content = await fs.readFile(absPath, 'utf-8');
   } catch {
-    console.error(`Помилка: не вдалося прочитати "${inputFile}"`);
+    console.error(`\nПомилка: не вдалося прочитати "${inputFile}"`);
+    console.error('Перевірте що файл знаходиться в тій самій папці що й програма.');
     process.exit(1);
   }
 
   const fileSizeMB = Buffer.byteLength(content, 'utf8') / 1024 / 1024;
-  if (fileSizeMB > 100) {
-    console.warn(`Увага: файл ${fileSizeMB.toFixed(1)} МБ — для дуже великих файлів краще використовувати стрімінг`);
-  }
 
   console.log(`\nОбробка: ${path.basename(absPath)} (${fileSizeMB.toFixed(2)} МБ)`);
   console.log(`Потоки: ${numThreads}  |  Топ слів: ${topN}`);
@@ -103,27 +135,26 @@ async function main() {
 
   const startTime = Date.now();
 
-  // Розбиваємо на чанки
+
   const lines = content.split('\n');
   const chunks = splitIntoChunks(lines, numThreads);
 
-  // Запускаємо воркери паралельно
+  
   process.stdout.write(`Запуск ${chunks.length} воркерів... `);
   const results = await Promise.all(chunks.map(runWorker));
   console.log('готово');
 
-  // Зливаємо результати
+  
   process.stdout.write('Злиття результатів... ');
-  let merged = mergeResults(results);
+  const merged = mergeResults(results);
   console.log('готово');
 
   const totalWords  = results.reduce((s, r) => s + r.count, 0);
   const uniqueWords = merged.size;
   const elapsedSec  = ((Date.now() - startTime) / 1000).toFixed(3);
 
-  // Сортуємо та беремо топ N
-  const sorted = [...merged.entries()]
-    .sort((a, b) => b[1] - a[1]);
+ 
+  const sorted = [...merged.entries()].sort((a, b) => b[1] - a[1]);
 
   const topWords = sorted.slice(0, topN).map(([word, count]) => ({
     word,
@@ -131,7 +162,7 @@ async function main() {
     percent: parseFloat(((count / totalWords) * 100).toFixed(4)),
   }));
 
-  // Формуємо вихідний об'єкт
+
   const output = {
     file:                path.basename(absPath),
     processed_at:        new Date().toISOString(),
@@ -154,16 +185,20 @@ async function main() {
 
   // Виводимо підсумок у консоль
   console.log('\nРезультати:');
-  console.log(`  Всього слів      : ${totalWords.toLocaleString()}`);
-  console.log(`  Унікальних слів  : ${uniqueWords.toLocaleString()}`);
+  console.log(`  Всього слів       : ${totalWords.toLocaleString()}`);
+  console.log(`  Унікальних слів   : ${uniqueWords.toLocaleString()}`);
   console.log(`  Лексичне багатство: ${output.stats.lexical_richness}%`);
-  console.log(`  Час обробки      : ${elapsedSec}с`);
+  console.log(`  Час обробки       : ${elapsedSec}с`);
   console.log(`\nТоп 10 слів:`);
   topWords.slice(0, 10).forEach((w, i) => {
     const bar = '█'.repeat(Math.round(w.percent * 2));
     console.log(`  ${String(i + 1).padStart(2)}. ${w.word.padEnd(20)} ${String(w.count).padStart(6)}x  ${bar}`);
   });
   console.log(`\nЗбережено → ${outPath}`);
+  console.log('\nНатисніть Enter для виходу...');
+
+  // Пауза перед закриттям щоб консоль не зникла одразу
+  await new Promise(resolve => process.stdin.once('data', resolve));
 }
 
 main().catch(err => {
