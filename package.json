@@ -1,0 +1,9 @@
+{
+  "name": "word-counter",
+  "version": "1.0.0",
+  "bin": "index.js",
+  "pkg": {
+    "assets": ["worker.js"],
+    "targets": ["node18-win-x64"]
+  }
+}
